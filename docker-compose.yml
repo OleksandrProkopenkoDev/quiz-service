@@ -1,0 +1,161 @@
+version: '3.7'
+services:
+
+  quiz-postgres:
+    container_name: quiz-service-db
+    build:
+      context: ../db/lmsPostgres
+      dockerfile: ../lmsPostgres/lmsPostgres.Dockerfile
+    restart: always
+    environment:
+      POSTGRES_USER: sa
+      POSTGRES_PASSWORD: ${TRAINING_SERVICE_DB_USER_PASSWORD}
+      POSTGRES_MULTIPLE_DATABASES: keycloak, "quiz_service"
+    volumes:
+      - quiz-db:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5433:5432"
+    networks:
+      quiz-network:
+
+  quiz-mongodb:
+    container_name: quiz-service-mongodb
+    image: mongo
+    restart: always
+    ports:
+      - "27777:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: sa
+      MONGO_INITDB_ROOT_PASSWORD: ${TRAINING_SERVICE_DB_USER_PASSWORD}
+      MONGO_INITDB_DATABASE: quiz_service
+    volumes:
+      - quiz-mongodb-data:/data/db
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok'
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    networks:
+      quiz-network:
+
+  ts-backend:
+    image: registry.gitlab.com/microlms360/training-service/quiz/backend
+    container_name: training-service-backend
+    ports:
+      - "8080:8080"
+    depends_on:
+      - quiz-postgres
+      - quiz-mongodb
+      - broker
+
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://quiz-postgres:5432/quiz_service
+      SPRING_DATASOURCE_PASSWORD: ${TRAINING_SERVICE_DB_USER_PASSWORD}
+      SPRING_DATASOURCE_USERNAME: sa
+      SPRING_DATA_MONGODB_URI: mongodb://sa:${TRAINING_SERVICE_DB_USER_PASSWORD}@quiz-mongodb:27777/
+      SPRING_DATA_MONGODB_DATABASE: quiz_service
+    networks:
+      quiz-network:
+
+  #This container doesn't work due to absence of frontend at this moment
+  ts-frontend:
+    image: registry.gitlab.com/microlms360/training-service/quiz/frontend
+    container_name: training-service-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - ts-backend
+    networks:
+      quiz-network:
+
+  quiz-keycloak:
+    image: quay.io/keycloak/keycloak:22.0.1
+    container_name: keycloak
+    volumes:
+      - ./keycloak/config:/opt/keycloak/data/import
+      - ./src/main/resources/keycloak-to-kafka-producer.jar:/opt/keycloak/providers/keycloak-to-kafka-producer.jar
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://quiz-postgres:5432/keycloak
+      KC_DB_USERNAME: sa
+      KC_DB_PASSWORD: ${TRAINING_SERVICE_DB_USER_PASSWORD}
+    ports:
+      - "9080:8080"
+    depends_on:
+      quiz-postgres:
+        condition: service_healthy
+    networks:
+      - quiz-network
+    entrypoint: [ "/opt/keycloak/bin/kc.sh", "start-dev", "--import-realm" ]
+
+  broker:
+    image: confluentinc/cp-kafka:7.4.0
+    hostname: broker
+    container_name: quiz-broker
+    depends_on:
+      - controller
+    ports:
+      - "9092:9092"
+      - "9101:9101"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://broker:29092,PLAINTEXT_HOST://localhost:9092'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: localhost
+      KAFKA_PROCESS_ROLES: 'broker'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '2@controller:9093'
+      KAFKA_LISTENERS: 'PLAINTEXT://broker:29092,PLAINTEXT_HOST://0.0.0.0:9092'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
+      # Replace CLUSTER_ID with a unique base64 UUID using "bin/kafka-storage.sh random-uuid"
+      # See https://docs.confluent.io/kafka/operations-tools/kafka-tools.html#kafka-storage-sh
+      CLUSTER_ID: 'MkU3OEGBNTcwNTJENDM2Qk'
+    networks:
+      quiz-network:
+
+  controller:
+    image: confluentinc/cp-kafka:7.4.0
+    hostname: controller
+    container_name: quiz-controller
+    ports:
+      - "9093:9093"
+      - "9102:9102"
+    environment:
+      KAFKA_NODE_ID: 2
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_JMX_PORT: 9102
+      KAFKA_JMX_HOSTNAME: localhost
+      KAFKA_PROCESS_ROLES: 'controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '2@controller:9093'
+      KAFKA_LISTENERS: 'CONTROLLER://controller:9093'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_LOG_DIRS: '/tmp/kraft-controller-logs'
+      # Replace CLUSTER_ID with a unique base64 UUID using "bin/kafka-storage.sh random-uuid"
+      # See https://docs.confluent.io/kafka/operations-tools/kafka-tools.html#kafka-storage-sh
+      CLUSTER_ID: 'MkU3OEGBNTcwNTJENDM2Qk'
+    networks:
+      quiz-network:
+
+volumes:
+  quiz-db:
+  quiz-mongodb-data:
+
+networks:
+  quiz-network:

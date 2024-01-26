@@ -1,0 +1,66 @@
+workflow:
+  rules:
+    - changes:
+        - monitaet/backend/**/*
+
+stages:
+  - build
+
+build_jar:
+  tags:
+    - ubuntu
+  stage: build
+  image: maven:3.8.3-openjdk-17-slim
+  script:
+    - cd ./monitaet/backend/quiz
+    ## Added to check codestyle by @Zakhar Kuropiatnyk
+    - mvn spotless:check
+    - mvn $MAVEN_CLI_OPTS package -DskipTests
+  artifacts:
+    paths:
+      - monitaet/backend/quiz/target
+
+build_image_feature:
+  tags:
+    - docker
+  needs:
+    - build_jar
+  when: manual
+  stage: build
+  image: docker:20.10.12
+  services:
+    - docker:20.10.12-dind
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
+  script:
+    - cd ./monitaet/backend/quiz
+    - docker build -t $CI_REGISTRY_IMAGE/quiz/backend:$CI_COMMIT_REF_NAME .
+    - docker push $CI_REGISTRY_IMAGE/quiz/backend:$CI_COMMIT_REF_NAME
+  except:
+    - master
+    - dev
+    - staging
+
+build_image:
+  tags:
+    - docker
+  needs:
+    - build_jar
+  stage: build
+  image: docker:20.10.12
+  services:
+    - docker:20.10.12-dind
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
+  script:
+    - cd ./monitaet/backend/quiz
+    - docker build -t $CI_REGISTRY_IMAGE/quiz/backend:latest .
+    - docker push $CI_REGISTRY_IMAGE/quiz/backend:latest
+  only:
+    - dev
+
+
