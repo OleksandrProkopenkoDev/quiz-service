@@ -1,4 +1,4 @@
-# Hiring service
+# Quiz service
 
 ## Project description
 
